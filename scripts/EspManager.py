@@ -12,9 +12,8 @@ espAddrs = {}
 
 # put in the addresses of the esp when they connect to the wifi right here
 # ammar hotspot - 172.20.10.7
-espAddrs["esp0"] = "192.168.177.158"
-espAddrs["esp1"] = "idk"
-espAddrs["esp2"] = "idk"
+espAddrs["esp0"] = "10.42.0.130"
+espAddrs["esp1"] = "10.42.0.63"
 espAddrs["esp2"] = "idk"
 espAddrs["esp3"] = "idk"
 espAddrs["esp4"] = "idk"
