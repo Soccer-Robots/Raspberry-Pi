@@ -19,8 +19,12 @@ In order to detect the current camera(Arducam IMX219) we will first need to disa
 
 Scroll down until you find these lines. Then change them into what is below.
 
-**camera_auto_detect=0
+**camera_auto_detect=0,
 dtoverlay=imx219**
+
+Reboot Pi
+
+**sudo reboot**
 
 
 
