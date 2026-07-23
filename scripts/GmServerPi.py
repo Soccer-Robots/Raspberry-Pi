@@ -16,7 +16,7 @@ espSocketPath = "/tmp/gmESPSocket"
 sharedMemory = "/tmp/shared_timer"
 
 game_time = 0
-num_players = 1
+num_players = 2
 
 def getTime():
     return game_time

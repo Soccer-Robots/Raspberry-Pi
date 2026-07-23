@@ -13,7 +13,7 @@ espAddrs = {}
 # put in the addresses of the esp when they connect to the wifi right here
 # ammar hotspot - 172.20.10.7
 espAddrs["esp0"] = "10.42.0.130"
-espAddrs["esp1"] = "10.42.0.63"
+espAddrs["esp1"] = "10.42.0.102"
 espAddrs["esp2"] = "idk"
 espAddrs["esp3"] = "idk"
 espAddrs["esp4"] = "idk"
@@ -205,10 +205,9 @@ while(True):
             # first one sent is the id
             playerId = int(movementData[0])
             # for now since only one esp. Once you have more, just remove the if statement and unintend the code inside it
-            if(playerId == 0):
-                # after the first two chars, that is the movement data
-                movementData = movementData[2:]
-                os.write(parentPipes[playerId][1], movementData.encode())
+            # after the first two chars, that is the movement data
+            movementData = movementData[2:]
+            os.write(parentPipes[playerId][1], movementData.encode())
         # no big deal if we don't get data in that time
         except socket.timeout:
             print("")
