@@ -1,0 +1,24 @@
+ESp listening for game manager
+gm accepted communication!
+ESP listening for controller
+controller accepted communication!
+Number of players is gonna be 1!
+Parent finished creating its beautiful ESP children!
+esp manager expected ready check, got this instead: 
+Traceback (most recent call last):
+  File "/home/gamemaster/SoccerRobots/scripts/EspManager.py", line 194, in <module>
+    gmConn.sendall(b"no")
+    ~~~~~~~~~~~~~~^^^^^^^
+BrokenPipeError: [Errno 32] Broken pipe
+ESp listening for game manager
+gm accepted communication!
+ESP listening for controller
+controller accepted communication!
+Number of players is gonna be 1!
+we made a esp that will communicate with esp #0!
+Child here. Supposed to get ready command, but didn't! Instead got: 
+Traceback (most recent call last):
+  File "/home/gamemaster/SoccerRobots/scripts/EspManager.py", line 119, in <module>
+    os.write(childWrite, b"no")
+    ~~~~~~~~^^^^^^^^^^^^^^^^^^^
+BrokenPipeError: [Errno 32] Broken pipe
