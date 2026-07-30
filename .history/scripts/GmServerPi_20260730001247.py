@@ -27,7 +27,7 @@ os.ftruncate(timerFile, 1)
 memLocation = mmap.mmap(timerFile, 1)
 
 # connect with esp now
-espSocket = socket.socket(socket.AF_UNIX, socket.SOCK_SEQPACKET)
+espSocket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
 espSocket.connect(espSocketPath)
 print("connected to esp manager!")
 
