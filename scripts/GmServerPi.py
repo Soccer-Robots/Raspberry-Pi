@@ -47,6 +47,7 @@ async def serverGM(websocket):
         while isReady==False:
             received_data = await websocket.recv()
             received = json.loads(received_data)
+            print("received message in controller is:")
             print(received)
             if received["type"] =="CHECK_READY":
                 # now, check with the esp manager if its ready
