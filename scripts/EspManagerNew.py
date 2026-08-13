@@ -8,8 +8,6 @@ socketToControl = "/tmp/controlESPSocket"
 
 timerSharedMemory = "/tmp/shared_timer"
 
-espAddrs = {}
-
 # removing these files if they exist, so we can recreate them
 if(os.path.exists(socketToGm)):
     os.remove(socketToGm)
