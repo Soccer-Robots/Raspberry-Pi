@@ -20,6 +20,9 @@ game_time = 0
 
 runBackTracking = False
 
+# Tracks whether EspManager has already received its
+# one-time player count initialization.
+playersInitialized = False
 
 def getTime():
     return game_time
@@ -63,10 +66,7 @@ print("Connected to ESP Manager!")
 # -------------------------------------------------------------
 
 async def serverGM(websocket):
-
-    # EspManager only expects the number of players once,
-    # when it first starts.
-    playersInitialized = False
+    global playersInitialized
 
     while True:
 
