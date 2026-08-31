@@ -13,33 +13,50 @@ HOST = "10.42.0.1"
 PORT = 1234
 
 espSocketPath = "/tmp/gmESPSocket"
-
 sharedMemory = "/tmp/shared_timer"
 
 game_time = 0
 
-runBackTracking = False
-
 # Tracks whether EspManager has already received its
-# one-time player count initialization.
+# one-time player-count initialization.
 playersInitialized = False
+
 
 def getTime():
     return game_time
+
+
+def recvExact(sock, numBytes):
+    data = b""
+
+    while len(data) < numBytes:
+        chunk = sock.recv(
+            numBytes - len(data)
+        )
+
+        if not chunk:
+            raise ConnectionError(
+                "Socket closed while receiving data"
+            )
+
+        data += chunk
+
+    return data
 
 
 # -------------------------------------------------------------
 # SHARED TIMER MEMORY
 # -------------------------------------------------------------
 
-# Allocate shared memory before communicating with EspManager.
-# This helps prevent race conditions between the two processes.
 timerFile = os.open(
     sharedMemory,
     os.O_CREAT | os.O_RDWR
 )
 
-os.ftruncate(timerFile, 1)
+os.ftruncate(
+    timerFile,
+    1
+)
 
 memLocation = mmap.mmap(
     timerFile,
@@ -56,9 +73,13 @@ espSocket = socket.socket(
     socket.SOCK_STREAM
 )
 
-espSocket.connect(espSocketPath)
+espSocket.connect(
+    espSocketPath
+)
 
-print("Connected to ESP Manager!")
+print(
+    "Connected to ESP Manager!"
+)
 
 
 # -------------------------------------------------------------
@@ -66,7 +87,10 @@ print("Connected to ESP Manager!")
 # -------------------------------------------------------------
 
 async def serverGM(websocket):
+
+    global game_time
     global playersInitialized
+
 
     while True:
 
@@ -77,7 +101,9 @@ async def serverGM(websocket):
 
         isReady = False
 
-        print("Inside GM")
+        print(
+            "Inside GM"
+        )
 
 
         # -----------------------------------------------------
@@ -88,10 +114,18 @@ async def serverGM(websocket):
 
             received_data = await websocket.recv()
 
-            received = json.loads(received_data)
+            received = json.loads(
+                received_data
+            )
 
-            print("Received message in Game Manager:")
-            print(received)
+
+            print(
+                "Received message in Game Manager:"
+            )
+
+            print(
+                received
+            )
 
 
             if received["type"] == "CHECK_READY":
@@ -101,8 +135,8 @@ async def serverGM(websocket):
                 )
 
 
-                # EspManager expects the player count once
-                # before its first "ready?" message.
+                # EspManager expects the player count exactly
+                # once before its first ready? command.
                 if not playersInitialized:
 
                     print(
@@ -110,9 +144,11 @@ async def serverGM(websocket):
                         numPlayers
                     )
 
+
                     espSocket.sendall(
                         bytes([numPlayers])
                     )
+
 
                     playersInitialized = True
 
@@ -123,18 +159,24 @@ async def serverGM(websocket):
                 )
 
 
-                # EspManager responds with either:
+                # Ready protocol:
                 #
-                # yes
-                # no
-                readyCheck = espSocket.recv(3).decode()
+                # 1 = ready
+                # 0 = not ready
+                readyCheck = recvExact(
+                    espSocket,
+                    1
+                )
 
 
-                if readyCheck == "yes":
+                if readyCheck == b"1":
 
-                    print("ESP Manager reports READY")
+                    print(
+                        "ESP Manager reports READY"
+                    )
 
                     isReady = True
+
 
                     await websocket.send(
                         json.dumps(
@@ -145,6 +187,7 @@ async def serverGM(websocket):
                         )
                     )
 
+
                     break
 
 
@@ -153,6 +196,7 @@ async def serverGM(websocket):
                     print(
                         "ESP Manager reports NOT READY"
                     )
+
 
                     await websocket.send(
                         json.dumps(
@@ -184,16 +228,24 @@ async def serverGM(websocket):
 
 
         # Debugging
-        if isinstance(received, str):
+        if isinstance(
+            received,
+            str
+        ):
 
             print(
                 "DEBUG: received is a string:"
             )
 
-            print(received)
+            print(
+                received
+            )
 
 
-        if isinstance(received["payload"], str):
+        if isinstance(
+            received["payload"],
+            str
+        ):
 
             print(
                 "DEBUG: received['payload'] is a string"
@@ -207,7 +259,9 @@ async def serverGM(websocket):
 
         print(
             received["payload"],
-            type(received["payload"])
+            type(
+                received["payload"]
+            )
         )
 
 
@@ -222,14 +276,19 @@ async def serverGM(websocket):
         )
 
 
-        print("\nTimer:")
+        print(
+            "\nTimer:"
+        )
 
 
         # -----------------------------------------------------
         # GAME LOOP
         # -----------------------------------------------------
 
-        while game_time >= 0 and isReady:
+        while (
+            game_time >= 0
+            and isReady
+        ):
 
             # -------------------------------------------------
             # GAME END
@@ -256,13 +315,13 @@ async def serverGM(websocket):
 
                 isReady = False
 
-                runBackTracking = True
-
 
                 # Notify EspManager that the game ended
                 memLocation[:1] = bytes([0])
 
+
                 break
+
 
             # -------------------------------------------------
             # SEND SCORE
@@ -312,7 +371,10 @@ async def serverGM(websocket):
         # GAME FINISHED
         # -----------------------------------------------------
 
-        print("\n")
+        print(
+            "\n"
+        )
+
 
         print(
             "FINAL SCORE: Team 1:",
@@ -322,20 +384,16 @@ async def serverGM(websocket):
         )
 
 
-        # Future backtracking:
-        #
-        # if runBackTracking:
-        #     test = runTrakcer()
-        #     runBackTracking = False
-
-
 # -------------------------------------------------------------
 # START WEBSOCKET SERVER
 # -------------------------------------------------------------
 
 async def main():
 
-    print("STARTED GM SERVER")
+    print(
+        "STARTED GM SERVER"
+    )
+
 
     try:
 
@@ -355,6 +413,7 @@ async def main():
                 "GM server is running and waiting for clients"
             )
 
+
             await asyncio.Future()
 
 
@@ -366,4 +425,6 @@ async def main():
         )
 
 
-asyncio.run(main())
+asyncio.run(
+    main()
+)

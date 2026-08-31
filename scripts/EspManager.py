@@ -5,7 +5,6 @@ from ESPClient import ESPClient
 
 socketToGm = "/tmp/gmESPSocket"
 socketToControl = "/tmp/controlESPSocket"
-
 timerSharedMemory = "/tmp/shared_timer"
 
 espAddrs = {}
@@ -14,8 +13,22 @@ espAddrs = {}
 # False = communicate with real ESP32s
 MOCK_ESP = True
 
+
+def recvExact(sock, numBytes):
+    data = b""
+
+    while len(data) < numBytes:
+        chunk = sock.recv(numBytes - len(data))
+
+        if not chunk:
+            raise ConnectionError("Socket closed while receiving data")
+
+        data += chunk
+
+    return data
+
+
 # Put in the addresses of the ESPs when they connect to Wi-Fi
-# ammar hotspot - 172.20.10.7
 espAddrs["esp0"] = "10.42.0.130"
 espAddrs["esp1"] = "10.42.0.102"
 espAddrs["esp2"] = "idk"
@@ -59,7 +72,7 @@ print("Controller accepted communication!")
 
 
 # Game Manager first sends number of players
-numPlayers = gmConn.recv(1)[0]
+numPlayers = recvExact(gmConn, 1)[0]
 
 print("Number of players is gonna be " + str(numPlayers) + "!")
 
@@ -67,7 +80,7 @@ parentPipes = [[None, None] for _ in range(numPlayers)]
 
 
 # Converts XXXX controller input into movement letters.
-# Example:
+#
 # 1000 -> u
 # 0100 -> l
 # 0010 -> d
@@ -90,7 +103,10 @@ def getKeysFromNumbers(numInput):
     return finalMessage
 
 
-# Create one child process for every player / ESP
+# -------------------------------------------------------------
+# CREATE ESP CHILD PROCESSES
+# -------------------------------------------------------------
+
 for i in range(numPlayers):
     childRead, parentWrite = os.pipe()
     parentRead, childWrite = os.pipe()
@@ -118,19 +134,27 @@ for i in range(numPlayers):
             + "!"
         )
 
-        # Loop restarts at the end of each match
+        # Loop restarts after every match
         while True:
 
             # -------------------------------------------------
             # WAIT FOR READY CHECK
             # -------------------------------------------------
-            readyCheck = os.read(childRead, 6).decode()
+
+            readyCheck = os.read(
+                childRead,
+                6
+            ).decode()
 
             if readyCheck == "ready?":
+
+                espConnected = False
+                connection = None
 
                 # ---------------------------------------------
                 # MOCK ESP MODE
                 # ---------------------------------------------
+
                 if MOCK_ESP:
                     print(
                         "[MOCK ESP] ESP #"
@@ -138,11 +162,15 @@ for i in range(numPlayers):
                         + " is ready!"
                     )
 
-                    os.write(childWrite, b"yes")
+                    os.write(
+                        childWrite,
+                        b"1"
+                    )
 
                 # ---------------------------------------------
                 # REAL ESP MODE
                 # ---------------------------------------------
+
                 else:
                     connection = ESPClient(
                         espAddrs["esp" + str(i)],
@@ -158,10 +186,15 @@ for i in range(numPlayers):
                             + " failed connection!"
                         )
 
-                        os.write(childWrite, b"no")
+                        os.write(
+                            childWrite,
+                            b"0"
+                        )
 
                     else:
-                        connection.send("readyCheck")
+                        connection.send(
+                            "readyCheck"
+                        )
 
                         answer = connection.recv(2)
 
@@ -172,7 +205,10 @@ for i in range(numPlayers):
                                 + " is ready!"
                             )
 
-                            os.write(childWrite, b"yes")
+                            os.write(
+                                childWrite,
+                                b"1"
+                            )
 
                         else:
                             print(
@@ -181,7 +217,10 @@ for i in range(numPlayers):
                                 + " is not ready!"
                             )
 
-                            os.write(childWrite, b"no")
+                            os.write(
+                                childWrite,
+                                b"0"
+                            )
 
             else:
                 print(
@@ -189,17 +228,21 @@ for i in range(numPlayers):
                     + readyCheck
                 )
 
-                os.write(childWrite, b"no")
+                os.write(
+                    childWrite,
+                    b"0"
+                )
 
                 continue
 
 
             # -------------------------------------------------
-            # GAME MOVEMENT LOOP
+            # GAME MOVEMENT / RESET LOOP
             # -------------------------------------------------
+
             while True:
 
-                # Commands are always exactly 4 bytes:
+                # Expected values:
                 #
                 # 1000
                 # 0100
@@ -209,11 +252,17 @@ for i in range(numPlayers):
                 # or:
                 #
                 # rset
-                nextCommand = os.read(childRead, 4).decode()
+
+                nextCommand = os.read(
+                    childRead,
+                    4
+                ).decode()
+
 
                 # ---------------------------------------------
                 # RESET
                 # ---------------------------------------------
+
                 if nextCommand == "rset":
 
                     if MOCK_ESP:
@@ -223,8 +272,13 @@ for i in range(numPlayers):
                             + " reset"
                         )
 
-                    else:
-                        connection.send("reset")
+                    elif (
+                        connection is not None
+                        and espConnected
+                    ):
+                        connection.send(
+                            "reset"
+                        )
 
                     break
 
@@ -232,9 +286,11 @@ for i in range(numPlayers):
                 # ---------------------------------------------
                 # MOVEMENT
                 # ---------------------------------------------
+
                 formattedInput = getKeysFromNumbers(
                     nextCommand
                 )
+
 
                 # No movement
                 if formattedInput == "":
@@ -252,15 +308,18 @@ for i in range(numPlayers):
                         + ")"
                     )
 
-                else:
-                    connection.send(formattedInput)
+                elif (
+                    connection is not None
+                    and espConnected
+                ):
+                    connection.send(
+                        formattedInput
+                    )
 
 
-        # Child cleanup
+        # Normally unreachable while the child loop runs
         os.close(childWrite)
         os.close(childRead)
-
-        print("Killing child")
 
         os._exit(0)
 
@@ -268,6 +327,7 @@ for i in range(numPlayers):
     # ---------------------------------------------------------
     # PARENT PROCESS
     # ---------------------------------------------------------
+
     else:
         parentPipes[i][0] = parentRead
         parentPipes[i][1] = parentWrite
@@ -300,10 +360,7 @@ memLocation = mmap.mmap(
 
 while True:
 
-    # Reset shared timer value at the beginning of each match.
-    #
-    # This prevents EspManager from immediately thinking
-    # the next game has already ended.
+    # Reset shared timer state for the next match
     memLocation[:1] = bytes([50])
 
 
@@ -311,12 +368,15 @@ while True:
     # WAIT FOR READY CHECK FROM GAME MANAGER
     # ---------------------------------------------------------
 
-    readyCheck = gmConn.recv(6).decode()
+    readyCheck = recvExact(
+        gmConn,
+        6
+    ).decode()
 
 
     if readyCheck == "ready?":
 
-        # Tell all ESP children to perform their ready checks
+        # Tell every ESP child to perform its ready check
         for i in range(numPlayers):
             os.write(
                 parentPipes[i][1],
@@ -324,34 +384,41 @@ while True:
             )
 
 
-        # Assume all ESPs are ready unless one reports failure
-        espReady = "yes"
+        # Assume every ESP is ready
+        espReady = True
 
 
-        # Get response from every ESP child
+        # Collect one-byte result from every ESP child
         for i in range(numPlayers):
 
             askEsp = os.read(
                 parentPipes[i][0],
-                3
+                1
             ).decode()
 
 
-            if askEsp == "no":
-                print("One ESP ready check failed!")
+            if askEsp != "1":
+                print(
+                    "One ESP ready check failed!"
+                )
 
-                espReady = "no"
-
-
-        # Send final result back to Game Manager
-        gmConn.sendall(
-            espReady.encode()
-        )
+                espReady = False
 
 
-        # If one or more ESPs failed, reset children
-        # and wait for another ready check
-        if espReady == "no":
+        # Send exactly one byte back to GmServerPi
+        #
+        # 1 = ready
+        # 0 = not ready
+        if espReady:
+            gmConn.sendall(b"1")
+
+        else:
+            gmConn.sendall(b"0")
+
+
+        # If readiness failed, reset all children
+        # and wait for another ready request.
+        if not espReady:
 
             for i in range(numPlayers):
                 os.write(
@@ -368,7 +435,7 @@ while True:
             + readyCheck
         )
 
-        gmConn.sendall(b"no")
+        gmConn.sendall(b"0")
 
         continue
 
@@ -377,37 +444,116 @@ while True:
     # GAME STARTED
     # ---------------------------------------------------------
 
+    # ControllerPi sends six-byte commands:
+    #
+    # 0|1000
+    # 1|0100
+    #
+    # SOCK_STREAM may split or combine messages, so maintain
+    # a persistent buffer for the duration of the match.
+    controlBuffer = bytearray()
+
+
     while memLocation[0] != 0:
 
         try:
 
-            # Receive controller data
-            movementData = controlConn.recv(6).decode()
-
-
-            # First character identifies the player
-            playerId = int(
-                movementData[0]
+            chunk = controlConn.recv(
+                1024
             )
 
 
-            # Controller format:
-            #
-            # 0|1000
-            #
-            # Remove player ID and separator
-            movementData = movementData[2:]
+            if not chunk:
+                raise ConnectionError(
+                    "ControllerPi closed its connection"
+                )
 
 
-            # Send movement command to that player's child
-            os.write(
-                parentPipes[playerId][1],
-                movementData.encode()
+            controlBuffer.extend(
+                chunk
             )
 
 
         except socket.timeout:
             pass
+
+
+        # Process every complete six-byte command currently
+        # stored in the stream buffer.
+        while len(controlBuffer) >= 6:
+
+            rawCommand = bytes(
+                controlBuffer[:6]
+            )
+
+            del controlBuffer[:6]
+
+
+            movementData = rawCommand.decode()
+
+
+            # Expected format:
+            #
+            # 0|1000
+            if movementData[1] != "|":
+                print(
+                    "Invalid controller command:",
+                    movementData
+                )
+
+                continue
+
+
+            try:
+                playerId = int(
+                    movementData[0]
+                )
+
+            except ValueError:
+                print(
+                    "Invalid player ID:",
+                    movementData
+                )
+
+                continue
+
+
+            # Make sure the requested player exists
+            if (
+                playerId < 0
+                or playerId >= numPlayers
+            ):
+                print(
+                    "Controller command for invalid player:",
+                    playerId
+                )
+
+                continue
+
+
+            movement = movementData[2:]
+
+
+            # Movement must contain exactly four binary values
+            if (
+                len(movement) != 4
+                or any(
+                    value not in "01"
+                    for value in movement
+                )
+            ):
+                print(
+                    "Invalid movement command:",
+                    movementData
+                )
+
+                continue
+
+
+            os.write(
+                parentPipes[playerId][1],
+                movement.encode()
+            )
 
 
     # ---------------------------------------------------------
