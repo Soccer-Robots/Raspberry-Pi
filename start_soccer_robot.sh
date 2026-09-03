@@ -15,9 +15,12 @@ ESP_MANAGER="$PROJECT_DIR/scripts/EspManager.py"
 GM_SERVER="$PROJECT_DIR/scripts/GmServerPi.py"
 CONTROLLER="$PROJECT_DIR/scripts/ControllerPi.py"
 
+STREAM_START="$PROJECT_DIR/scripts/start_streaming.sh"
+STREAM_STOP="$PROJECT_DIR/scripts/stop_streaming.sh"
+
 
 # ------------------------------------------------------------
-# VERIFY VIRTUAL ENVIRONMENT
+# VERIFY REQUIREMENTS
 # ------------------------------------------------------------
 
 if [ ! -x "$PYTHON" ]; then
@@ -26,6 +29,20 @@ if [ ! -x "$PYTHON" ]; then
     echo
     echo "Expected .venv to exist inside:"
     echo "$PROJECT_DIR"
+    exit 1
+fi
+
+
+if [ ! -x "$STREAM_START" ]; then
+    echo "ERROR: Streaming startup script is missing or not executable:"
+    echo "$STREAM_START"
+    exit 1
+fi
+
+
+if [ ! -x "$STREAM_STOP" ]; then
+    echo "ERROR: Streaming shutdown script is missing or not executable:"
+    echo "$STREAM_STOP"
     exit 1
 fi
 
@@ -47,11 +64,13 @@ if pgrep -f "$ESP_MANAGER" > /dev/null; then
     exit 1
 fi
 
+
 if pgrep -f "$GM_SERVER" > /dev/null; then
     echo "ERROR: GmServerPi.py is already running."
     echo "Stop the existing Soccer Robots processes before starting again."
     exit 1
 fi
+
 
 if pgrep -f "$CONTROLLER" > /dev/null; then
     echo "ERROR: ControllerPi.py is already running."
@@ -92,7 +111,6 @@ ESP_PID=$!
 sleep 2
 
 
-# Verify EspManager survived startup
 if ! kill -0 "$ESP_PID" 2>/dev/null; then
     echo "ERROR: EspManager.py failed to start."
     echo
@@ -116,7 +134,6 @@ GM_PID=$!
 sleep 2
 
 
-# Verify Game Manager survived startup
 if ! kill -0 "$GM_PID" 2>/dev/null; then
     echo "ERROR: GmServerPi.py failed to start."
     echo
@@ -143,7 +160,6 @@ CONTROLLER_PID=$!
 sleep 2
 
 
-# Verify Controller survived startup
 if ! kill -0 "$CONTROLLER_PID" 2>/dev/null; then
     echo "ERROR: ControllerPi.py failed to start."
     echo
@@ -157,17 +173,58 @@ fi
 
 
 # ------------------------------------------------------------
+# START STREAMING
+# ------------------------------------------------------------
+
+echo
+echo "Starting streaming stack..."
+
+if ! "$STREAM_START"; then
+    echo
+    echo "ERROR: Streaming stack failed to start."
+    echo "Shutting down Soccer Robots services..."
+
+    "$STREAM_STOP" 2>/dev/null || true
+
+    kill "$CONTROLLER_PID" 2>/dev/null || true
+    kill "$GM_PID" 2>/dev/null || true
+    kill "$ESP_PID" 2>/dev/null || true
+
+    rm -f /tmp/gmESPSocket
+    rm -f /tmp/controlESPSocket
+
+    exit 1
+fi
+
+echo
+echo "Streaming stack started successfully."
+
+
+# ------------------------------------------------------------
 # SUCCESS
 # ------------------------------------------------------------
 
 echo
-echo "Soccer Robots services started successfully."
+echo "=================================="
+echo " Soccer Robots started successfully"
+echo "=================================="
 echo
 echo "EspManager PID:   $ESP_PID"
 echo "GameManager PID:  $GM_PID"
 echo "Controller PID:   $CONTROLLER_PID"
 echo
+echo "Game Manager:"
+echo "  ws://10.42.0.1:1234"
+echo
+echo "Controller:"
+echo "  ws://10.42.0.1:1235"
+echo
+echo "Janus:"
+echo "  http://10.42.0.1:8088/janus"
+echo
 echo "Logs:"
 echo "  $LOG_DIR/esp.txt"
 echo "  $LOG_DIR/GMServer.txt"
 echo "  $LOG_DIR/Controller.txt"
+echo "  $LOG_DIR/janus.txt"
+echo "  $LOG_DIR/camera_stream.txt"
