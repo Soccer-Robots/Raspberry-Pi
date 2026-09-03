@@ -14,7 +14,7 @@ PORT = 1235
 
 controlSocketPath = "/tmp/controlESPSocket"
 
-controlSocket = socket.socket(socket.AF_UNIX, socket.SOCK_SEQPACKET)
+controlSocket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
 controlSocket.connect(controlSocketPath)
 print("Connected to socket!")
 

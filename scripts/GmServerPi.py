@@ -2,134 +2,429 @@ import asyncio
 import socket
 import websockets
 import json
-import time
 import os
 import mmap
 from inspect import signature
+
 # from backupTag import runTrakcer
 
-HOST = '10.42.0.1'
+
+HOST = "10.42.0.1"
 PORT = 1234
 
 espSocketPath = "/tmp/gmESPSocket"
-
 sharedMemory = "/tmp/shared_timer"
 
 game_time = 0
 
+# Tracks whether EspManager has already received its
+# one-time player-count initialization.
+playersInitialized = False
+
+
 def getTime():
     return game_time
-runBackTracking = False
 
-#before communicating with the espManager, to prevent race conditions first allocate sharemd memory.
-timerFile = os.open(sharedMemory, os.O_CREAT | os.O_RDWR)
-os.ftruncate(timerFile, 1)
-memLocation = mmap.mmap(timerFile, 1)
 
-# connect with esp now
-espSocket = socket.socket(socket.AF_UNIX, socket.SOCK_SEQPACKET)
-espSocket.connect(espSocketPath)
-print("connected to esp manager!")
+def recvExact(sock, numBytes):
+    data = b""
 
+    while len(data) < numBytes:
+        chunk = sock.recv(
+            numBytes - len(data)
+        )
+
+        if not chunk:
+            raise ConnectionError(
+                "Socket closed while receiving data"
+            )
+
+        data += chunk
+
+    return data
+
+
+# -------------------------------------------------------------
+# SHARED TIMER MEMORY
+# -------------------------------------------------------------
+
+timerFile = os.open(
+    sharedMemory,
+    os.O_CREAT | os.O_RDWR
+)
+
+os.ftruncate(
+    timerFile,
+    1
+)
+
+memLocation = mmap.mmap(
+    timerFile,
+    1
+)
+
+
+# -------------------------------------------------------------
+# CONNECT TO ESP MANAGER
+# -------------------------------------------------------------
+
+espSocket = socket.socket(
+    socket.AF_UNIX,
+    socket.SOCK_STREAM
+)
+
+espSocket.connect(
+    espSocketPath
+)
+
+print(
+    "Connected to ESP Manager!"
+)
+
+
+# -------------------------------------------------------------
+# GAME MANAGER WEBSOCKET
+# -------------------------------------------------------------
 
 async def serverGM(websocket):
-    # first time connecting from website, as placeholder say that webiste "sends" the number of players to the esp
+
+    global game_time
+    global playersInitialized
+
 
     while True:
+
         game_time = 0
+
         team1Score = 0
-        team2Score = 1
-        isReady = False 
+        team2Score = 0
 
-        print("inside GM")
+        isReady = False
 
-        # wait until the robots are ready
-        while isReady==False:
+        print(
+            "Inside GM"
+        )
+
+
+        # -----------------------------------------------------
+        # WAIT FOR ROBOTS / MOCK ESPS TO BE READY
+        # -----------------------------------------------------
+
+        while not isReady:
+
             received_data = await websocket.recv()
-            received = json.loads(received_data)
-            print("received message in controller is:")
-            print(received)
-            if received["type"] =="CHECK_READY":
-                # now, check with the esp manager if its ready
-                espSocket.sendall(f"ready?|{received['payload']['num_players']}".encode())
-                # at most, what's returned is 3 bits, as its either "yes" or "no".
-                readyCheck = espSocket.recv(3)
-                readyCheck = readyCheck.decode()
-                # if we return that they are ready, send that to the website
-                if(readyCheck == "yes"):
-                    print("READY GRAHHHHH")
+
+            received = json.loads(
+                received_data
+            )
+
+
+            print(
+                "Received message in Game Manager:"
+            )
+
+            print(
+                received
+            )
+
+
+            if received["type"] == "CHECK_READY":
+
+                numPlayers = int(
+                    received["payload"]["num_players"]
+                )
+
+
+                # EspManager expects the player count exactly
+                # once before its first ready? command.
+                if not playersInitialized:
+
+                    print(
+                        "Sending player count to ESP Manager:",
+                        numPlayers
+                    )
+
+
+                    espSocket.sendall(
+                        bytes([numPlayers])
+                    )
+
+
+                    playersInitialized = True
+
+
+                # Ask EspManager if all ESPs are ready
+                espSocket.sendall(
+                    b"ready?"
+                )
+
+
+                # Ready protocol:
+                #
+                # 1 = ready
+                # 0 = not ready
+                readyCheck = recvExact(
+                    espSocket,
+                    1
+                )
+
+
+                if readyCheck == b"1":
+
+                    print(
+                        "ESP Manager reports READY"
+                    )
+
                     isReady = True
-                    await websocket.send(json.dumps({
-                        "type": "IS_READY",
-                        "payload": True
-                    }))
+
+
+                    await websocket.send(
+                        json.dumps(
+                            {
+                                "type": "IS_READY",
+                                "payload": True
+                            }
+                        )
+                    )
+
+
                     break
+
+
                 else:
-                    # else we'd have returned that they're not ready
-                    print("Tried to check if ready, the ESP's are not!")
-                    await websocket.send(json.dumps({
-                        "type": "IS_READY",
-                        "payload": False
-                    }))
+
+                    print(
+                        "ESP Manager reports NOT READY"
+                    )
+
+
+                    await websocket.send(
+                        json.dumps(
+                            {
+                                "type": "IS_READY",
+                                "payload": False
+                            }
+                        )
+                    )
+
+
             else:
-                print("Supposed to receive ready signal, what we actually got: " + received["type"])
+
+                print(
+                    "Expected CHECK_READY, but received: "
+                    + received["type"]
+                )
+
+
+        # -----------------------------------------------------
+        # RECEIVE GAME TIMER
+        # -----------------------------------------------------
 
         received_data = await websocket.recv()
-        received = json.loads(received_data)    
-        # for debugging, there is a bug where data is seemingly sent as a string instead of a json object
-        if(isinstance(received, str)):
-            print("bruh it's a string! Its value is: " + received)
-        if(isinstance(received["payload"], str)):
-            print("DEBUG: The received[payload] is a string")
-            print(f"DEBUG: Value of payload: {received['payload']}")
-        print(received["payload"], type(received["payload"]))
-        print(f"DEBUG: The value of received[payload][timer] {received['payload']['timer']}")
-        game_time = received["payload"]["timer"]
-        print("\nTimer:")
-        
-        score_update = {
-            "type": "SCORE_UPDATE",
-            "payload": {"score1": team1Score, "score2": team2Score}
-        }
 
-        # continue printing until game is over
-        while game_time >= 0 and isReady:
+        received = json.loads(
+            received_data
+        )
+
+
+        # Debugging
+        if isinstance(
+            received,
+            str
+        ):
+
+            print(
+                "DEBUG: received is a string:"
+            )
+
+            print(
+                received
+            )
+
+
+        if isinstance(
+            received["payload"],
+            str
+        ):
+
+            print(
+                "DEBUG: received['payload'] is a string"
+            )
+
+            print(
+                "DEBUG: Value:",
+                received["payload"]
+            )
+
+
+        print(
+            received["payload"],
+            type(
+                received["payload"]
+            )
+        )
+
+
+        print(
+            "DEBUG timer value:",
+            received["payload"]["timer"]
+        )
+
+
+        game_time = int(
+            received["payload"]["timer"]
+        )
+
+
+        print(
+            "\nTimer:"
+        )
+
+
+        # -----------------------------------------------------
+        # GAME LOOP
+        # -----------------------------------------------------
+
+        while (
+            game_time >= 0
+            and isReady
+        ):
+
+            # -------------------------------------------------
+            # GAME END
+            # -------------------------------------------------
+
             if game_time == 0:
-                final_score_update = {"type": "GAME_END","payload": {"timer": 0, "score1": team1Score, "score2": team2Score}}
-                await websocket.send(json.dumps(final_score_update))
+
+                final_score_update = {
+                    "type": "GAME_END",
+                    "payload": {
+                        "timer": 0,
+                        "score1": team1Score,
+                        "score2": team2Score
+                    }
+                }
+
+
+                await websocket.send(
+                    json.dumps(
+                        final_score_update
+                    )
+                )
+
+
                 isReady = False
-                runBackTracking = True
-                # when game time is 0, now reset the shared memory with espManger, telling it timer is now 0, and thus we are finished
+
+
+                # Notify EspManager that the game ended
                 memLocation[:1] = bytes([0])
+
+
                 break
 
-            if game_time%7==0:
-                team1Score += 1
-            elif game_time%9==0:
-                team2Score += 1
 
-            print("Send Current Time: "+str(game_time))
-            await websocket.send(json.dumps({"type": "SCORE_UPDATE", "payload": {"score1": team1Score, "score2": team2Score}}))
-            await websocket.send(json.dumps({"type":"TIMER_UPDATE","payload":{"timer":game_time}}))
-            time.sleep(1)
+            # -------------------------------------------------
+            # SEND SCORE
+            # -------------------------------------------------
+
+            print(
+                "Send Current Time:",
+                game_time
+            )
+
+
+            await websocket.send(
+                json.dumps(
+                    {
+                        "type": "SCORE_UPDATE",
+                        "payload": {
+                            "score1": team1Score,
+                            "score2": team2Score
+                        }
+                    }
+                )
+            )
+
+
+            # -------------------------------------------------
+            # SEND TIMER
+            # -------------------------------------------------
+
+            await websocket.send(
+                json.dumps(
+                    {
+                        "type": "TIMER_UPDATE",
+                        "payload": {
+                            "timer": game_time
+                        }
+                    }
+                )
+            )
+
+
+            await asyncio.sleep(1)
+
             game_time -= 1
 
-        print("\n\n")
-        print("FINAL SCORE: Team 1: ", team1Score, " Team 2: ", team2Score)
 
-        # if runBackTracking:
-            # test = runTrakcer()
-            # runBackTracking = False
+        # -----------------------------------------------------
+        # GAME FINISHED
+        # -----------------------------------------------------
 
+        print(
+            "\n"
+        )
+
+
+        print(
+            "FINAL SCORE: Team 1:",
+            team1Score,
+            "Team 2:",
+            team2Score
+        )
+
+
+# -------------------------------------------------------------
+# START WEBSOCKET SERVER
+# -------------------------------------------------------------
 
 async def main():
-    print("STARTED GM SERVER")
-    try:
-        print("serverGM args:" , signature(serverGM))
-        async with websockets.serve(serverGM, HOST, PORT):
-            print("GM server is running and wiating for clients")
-            await asyncio.Future()  # run forever
-    except Exception as err:
-        print("Failed to bind itself: ", err)
 
-asyncio.run(main())
+    print(
+        "STARTED GM SERVER"
+    )
+
+
+    try:
+
+        print(
+            "serverGM args:",
+            signature(serverGM)
+        )
+
+
+        async with websockets.serve(
+            serverGM,
+            HOST,
+            PORT
+        ):
+
+            print(
+                "GM server is running and waiting for clients"
+            )
+
+
+            await asyncio.Future()
+
+
+    except Exception as err:
+
+        print(
+            "Failed to bind itself:",
+            err
+        )
+
+
+asyncio.run(
+    main()
+)

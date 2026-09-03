@@ -1,0 +1,17 @@
+general: {
+}
+
+soccer-camera: {
+    type = "rtp"
+    id = 43
+    description = "Soccer Robots Camera"
+
+    audio = false
+    video = true
+
+    videoport = 5006
+    videopt = 96
+    videocodec = "h264"
+
+    videofmtp = "profile-level-id=42e01f;packetization-mode=1"
+}

@@ -1,162 +1,1380 @@
-# Starting the Raspberry Pi
+# Soccer Robots Raspberry Pi Runtime
+
+This repository contains the Raspberry Pi side of the Soccer Robots project.
+
+The Raspberry Pi acts as the bridge between:
+
+- the Soccer Robots website
+- the game manager
+- player controller input
+- ESP32-controlled robots
+- the arena camera
+- Janus WebRTC video streaming
+
+The normal Raspberry Pi runtime is started with a single command:
+
+```bash
+./start_soccer_robot.sh
+```
+
+and stopped with:
+
+```bash
+./stop_soccer_robot.sh
+```
+
+---
+
+# System Architecture
 
-## Setup
+The Raspberry Pi currently runs four major subsystems:
+
+```text
+                        Soccer Robots Client
+                         /              \
+                        /                \
+                       v                  v
+              Game / Controller       WebRTC Video
+                       |                  ^
+                       |                  |
+                  WebSockets             |
+                 1234 / 1235             |
+                       |                  |
+                       v                  |
+               Raspberry Pi              |
+                       |                  |
+        +--------------+-----------+      |
+        |              |           |      |
+        v              v           v      |
+   GmServerPi     ControllerPi    Janus ---+
+        \              /
+         \            /
+          v          v
+            EspManager
+                |
+                |
+          TCP to ESP32
+                |
+                v
+             Robots
+```
 
-Before starting anything, make sure you have installed the Driver for the WI-FI Adapter. You must also install all libraries to use the camera.
+The camera path is:
 
+```text
+IMX219 Camera
+      |
+      v
+rpicam-vid
+      |
+      | H.264 inside MPEG-TS
+      v
+GStreamer
+      |
+      | RTP / H.264
+      | UDP 127.0.0.1:5006
+      v
+Janus Streaming Plugin
+      |
+      | WebRTC
+      v
+Soccer Robots Client
+```
 
-### Installing Camera Libraries
+Janus receives one camera stream and can distribute that same stream to multiple WebRTC clients.
 
-You will need libcamera and picamera2 
-**sudo apt install libcamera**
-**sudo apt install -y python3-picamera2**
-[TROUBLE SHOOTING](https://www.youtube.com/watch?time_continue=356&v=U7yVpYv3gxQ&embeds_referring_euri=https%3A%2F%2Fwww.google.com%2Fsearch%3Fq%3Dconnecting%2Bcamera%2Bmodule%2B3%2Bto%2Bpi4%26rlz%3D1C1VDKB_enUS994US994%26oq%3Dconnecting%2Bcamera%2Bmodule%2B3%2Bto%2Bpi4%26&source_ve_path=MzY4NDIsMzY4NDIsMzY4NDIsMzY4NDIsMzY4NDIsMzY4NDIsMzY4NDIsMzY4NDIsMzY4NDIsMTM5MTE3LDIzODUx)
-## Arducam IMX219 Setup
+This avoids opening the Raspberry Pi camera separately for every player.
 
-In order to detect the current camera(Arducam IMX219) we will first need to disable auto detect.
+---
 
-**sudo nano /boot/firmware/config.txt**
+# Tested Platform
 
-Scroll down until you find these lines. Then change them into what is below.
+The current runtime has been developed and tested with:
 
-**camera_auto_detect=0,
-dtoverlay=imx219**
+```text
+Raspberry Pi:      Raspberry Pi 4
+Operating System:  Raspberry Pi OS / Debian 13 (trixie)
+Architecture:      aarch64
+Camera:            IMX219
+Camera interface:  libcamera / rpicam
+```
 
-Reboot Pi
+The current Soccer Robots hotspot address is:
 
-**sudo reboot**
+```text
+10.42.0.1
+```
 
+This address is used by the Game Manager, Controller, and Janus development configuration.
 
+---
 
-### Installing WI-FI Driver
-When testing if the driver is installed type lsusb in the command line to find usb name and position. Type lsusb -t and find usb. look for "Driver=". If there is nothing there like rtl8852bu then the driver is not installed.
+# Runtime Components
 
-If this is the case, find the required chipset.
-Install the chipset onto the driver by cloning the driver repo best suited and following the steps.
+## EspManager.py
 
-Ensure you have the right developer tools.
-**sudo apt install -y build-essential bc dkms git raspberrypi-kernel-headers**
+`EspManager.py` is the central robot communication process.
 
-### Starting the hotspot
-To broadcast the hotspot, run the following command to create a hotspot, replacing the [hotspot name] and [hotspot password] placeholders with a hotspot name and password of your choice
+It receives:
 
-**$ sudo nmcli device wifi hotspot ssid [hotspot name] password [hotspot password] ifname wlan1**
+- game state from `GmServerPi.py`
+- movement commands from `ControllerPi.py`
 
-### Accessing the Raspberry Pi
+It then routes those commands to the correct ESP32.
 
-After turning on the Pi and connecting to the internet, use your terminal to SSH into the Pi by typing [username]@[ipaddress], where "gamemaster" is the current username and the ipaddress is your local Pi address shown below(NOTE: Once hotspot is setup this will default to 10.42.0.1).
+For every active player, EspManager creates a child process.
 
+Conceptually:
 
-![image](https://github.com/user-attachments/assets/e83135cc-39a2-4ad9-8e8b-7ac2651071df)
+```text
+EspManager
+    |
+    +-- child 0 --> ESP32 / Robot 0
+    |
+    +-- child 1 --> ESP32 / Robot 1
+    |
+    +-- child 2 --> ESP32 / Robot 2
+    |
+    ...
+```
 
-NOTE: when attempting to run the servers, you'll need to activate the virtual
-environment (which includes things like the libraries used). To activate this,
-create a Python (3.11) virtual environment from the requirements.txt file.
+The parent communicates with the children using Unix pipes.
 
-Also, make sure when communicating with the server that both **ControllerPi.py** and **GmServerPi.py** are active. Even if you're just testing the GM server, it will appear to not work unless
-the controller server is also active.
-(Note: Current Python Version 3.11.2)
-### Startup
-run start_soccer_robot.sh
-**bash start_soccer_robot.sh**
+The child processes communicate with ESP32 boards through `ESPClient.py`.
 
-If you run the script, you do not have to do the following: 
+### Mock ESP mode
 
-To run this, you want to first activate **EspManager.py**. This is basically the process that will communicate with the Raspberry Pi's. It does this by creating child processes, and each child
-makes a TCP connection with a single ESP, and communicates with the parent back and forth with unnamed pipes. **ControllerPi.py** and **GmServerPi.py** will send relevant information to **EspManager.py**
-through another socket connection. Here's a diagram to explain the purpose of each process a bit better (apologies for the poor quality).
-<img width="4445" height="3950" alt="better diagram" src="https://github.com/user-attachments/assets/e2b624f2-6dc2-4511-8342-c66bf52103d8" />
+`EspManager.py` contains:
 
+```python
+MOCK_ESP = True
+```
 
-Now to run the Raspberry Pi server, we will first run **EspManager.py**, move that to background, then run **GmServerPi.py**, move that to background, then run **ControllerPi.py**, move that to background,
-and that will be all you need to do. Note that you **MUST** run it in this order, otherwise because of the order of socket connections it won't work properly.
-RECAP:
-1. python EspManager.py (next CTRL+Z to pause, then type "bg" to place process in background)
-2. python GmServerPi.py (next CTRL+Z to pause, then type "bg" to place process in background)
-3. python ControllerPi.py
-(You can use "ps" linux command to check the proccesses that are running, it will have a process id.
-If one of the python programs have an error, then use the linux command "kill -9 [process-#]")
+When enabled, physical ESP32 connections are skipped and movement/reset messages are printed instead.
 
-Next, on the website do the npm run bootgame, npm run bootcontrol (run this after bootgame always) npm run dev and stuff. Now,
-get two people to start the game, and profit as you see the robot moving, the updated timer, and the updating score.
-RECAP:
-1. npm run bootgame
-2. npm run bootcontrol
-3. npm run dev
+This is useful for Raspberry Pi and website testing without robot hardware.
 
-As for the camera, you will be able to stream it by running **"cleanCode.py"**, which will begin streaming the camera to http:IP-ADDR-PORT, as long as it's connected to wifi and the camera itself is
-connected onto the Raspberry Pi. Note that while we're temporarily using the smaller camera, we want to use the Arducam camera eventually because it has a wider lens and thus can capture the game better.
-Research may need to be done on how to implement it with the Arducam, as there were some difficulties doing so.
+For real robot testing this must eventually be:
 
+```python
+MOCK_ESP = False
+```
 
-So overall, all the scripts you'll really need to run the website will be in the "scripts" directory, and you just need the following 5 files: **EspManager.py, ControllerPi.py, GmServerPi.py, ESPClient.py, and cleanCode.py**. ESPClient.py is used to easily handle connections between the ESP and the Pi.
+Make sure the ESP addresses are correct before disabling mock mode.
 
-Additionally, we did have code for the camera to detect charging stations, and give commands to the esp32 so that the robot will move towards the charging stations. The code for this may be in "apriltagLiveFeed.py",
-ask your mentor for further details.
+---
 
-      
-# File Descriptions
+## ESPClient.py
 
+`ESPClient.py` wraps the TCP connection between a Raspberry Pi child process and an ESP32.
 
-## Startup
+It handles operations such as:
 
-### EspManager.py
+```text
+connect
+send
+receive
+connection failure handling
+```
 
-This takes in data about motor inputs for each robot and signals from the game manager (game start, robot ready check, game end), and sends the appropriate data to each robot.
+ESP32 communication currently uses TCP port:
 
-To connect with each robot, it forks itself (basically like makes a clone of the program that also starts at the same code line where the fork was) based on however many robots there are. If there are 2 robots, for instnace, there will be 2 forks, and thus 2 child processes will be made.
+```text
+30000
+```
 
-May need to research pipes, forking, piping, and processes to understand this.
+---
 
-Then, when it receives a request for ready connection from GmServerPi.py, it relays that through pipes to its child processes, which then send a message to the robots asking if they're ready. If they are, they should return back their own success message successfully. Then if all robots returned success message, send that to the game manager file which then tells that to the website.
+## GmServerPi.py
 
-Also, for motor inputs, ControllerPi.py sends its ID alongside the motor inputs. EspManager checks the ID and sends it to the correct child process, which then sends those inputs to the esp32.
+`GmServerPi.py` connects the Raspberry Pi to the website Game Manager.
 
-It also has shared memory shared with GmServerPi.py, which is where the current game timer is stored. Basically, when the game ends, it puts in the shared memory that the game is over. EspManager reads from this frequently, and when it sees the game is over, it can shut off communication with the robots, and prepare for reconnection.
+It listens at:
 
-### ControllerPi.py
+```text
+ws://10.42.0.1:1234
+```
 
-This connects with the website's Controller file, and when the website sends inpts from the user, it directs those inputs to EspManager.py. Pretty straighforward, though it also checks if the input the user sends is the same input as before. If it is, then it doesn't send it, as that doesn't change anything.
+It handles messages such as:
 
-### GmServerPi.py
+```text
+CHECK_READY
+game start
+timer updates
+score updates
+game end
+```
 
-This connects with the website's game manager file. It handles and responds to certain messages from the website. For example, if it receives a packet to check if robots are ready, it sends that request to espmanager, gets a response, and sends that response back up to the website.
+When checking robot readiness:
 
-When it receives game start command, it begeins running the game, waiting until the timer's up, and when it is it puts in shared memeory with GmServer that time is up, to let it know to disconnect the robots. Then it restarts with waiting fora game to start. It also sends the timer to the website, as it actually is what has the decreasing timer.
+```text
+Website
+    |
+    v
+GmServerPi
+    |
+    | "ready?"
+    v
+EspManager
+    |
+    v
+ESP children
+    |
+    v
+ESP32
+```
 
-### ESPClient.py
+The final ready result is then sent back to the website.
 
-This is just a class where each object represents a connection with an esp32, used as a helper function. It has functions like trying to connect to the esp, sending data, and receiging data, alongside error handling too.
+The player count is sent from GmServerPi to EspManager as a single byte when EspManager is initialized.
 
-# Camera
+---
 
-## cleanCode.py
+## ControllerPi.py
 
-This creates a page that's hosted on the raspberry pi at a ip address and port to stream the camera display to. It initializes with the camera and starts a server to host the stream on, and connects them to the stream.... somehow. Probably when it calls self.wfile.write(frame), where it writes the current frame of the camera.
+`ControllerPi.py` receives movement commands from the website Controller server.
 
-## combinedCam.py
+It listens at:
 
-This is like the file above, but this time it makes it so if there's keyboard presses of WASD on the raspberry pi, it moves the camera lens to show a differnet place of the field. At least, I'm assuming that's the intention.
+```text
+ws://10.42.0.1:1235
+```
 
-NOTE: THIS ONE MAY BE OUTDATED; CHECK WITH DAMIAN ON THIS.
+Controller messages sent to EspManager are fixed-size messages similar to:
 
-## apriltagLiveFeed.py
+```text
+0|1000
+1|0100
+```
 
-This is basically exactly like the above, but now if you put an april tag in front of the camera, this code will detect that april tag. The code to detect the april tag will be useful likely, use this as reference when implementing the algorithm to send robots to charging stations. It may be outdated in the same way that combinedCam is outdated.
+The first value identifies the player.
 
+The final four characters represent movement input.
 
-## backtracking.py
+Example:
 
-There isn't any file named  this, I assume it's just backTest.py. This seems to first do the same as above, streaming it but also showing the april tag on the screen. Right now, it puts the movement instruction on the frame, so ideally the only thing that needs to be done is sending it. 
+```text
+1000 -> up
+0100 -> left
+0010 -> down
+0001 -> right
+0000 -> stop
+```
 
-It seems right now it's configured to send 2 pieces of data to the motor: first, the direction of movement (rotationg left, rotating right, moving backwards, moving forwards, stopping) as well has how much to rotate in each direciton. Now, main issue will be configuring that to become packets to send to the esp32. Have fun with that! 
+EspManager routes the movement data to the correct child process.
 
-Also note that each car has 4 states. State 0 is rotating to face target, state 1 is moring towards target, state 2 is doing final rotation, and state 3 means finished arriving and rotating at charigng station.
+---
 
-## backupTag.py
+# Raspberry Pi IPC
 
-This seems to be like a prototype of the one above? It uses a file that doesn't exist anymore (backtracking.py, though an archive of it is at https://github.com/UTDallasEPICS/Soccer-Robots/blob/1eee7dc0c4098b2c6e86b0c17d89b73867ff42a8/raspberrypi/scripts/archive/Backtracking.py.txt#L4). Even so, backupTag.py references a method in backtracking.py "get_direction", that I can't find in the backtracking.py archive file.
+GmServerPi and ControllerPi communicate with EspManager through Unix sockets.
 
-## carConnect.py
+```text
+/tmp/gmESPSocket
+/tmp/controlESPSocket
+```
 
-This is a file that was used to connect to the ESP32. Back when I made the ESPClient.py file I didn't know this one existed, but all it does for now is just connect and send a handshake, and that's it. Now though, it seems we don't need it since ESPClient.py and ESPManager.py does everything this would've already done.
+These sockets use:
+
+```text
+AF_UNIX
+SOCK_STREAM
+```
+
+The startup and shutdown scripts remove stale copies of these sockets.
+
+---
+
+# Shared Game Timer
+
+EspManager and GmServerPi share game state through:
+
+```text
+/tmp/shared_timer
+```
+
+The timer is implemented using memory mapping.
+
+When the game ends, the shared value reaches zero.
+
+EspManager detects this and sends a reset command to each robot child process.
+
+---
+
+# Network Ports
+
+| Port | Protocol | Purpose |
+|---|---|---|
+| 1234 | WebSocket/TCP | Website Game Manager → GmServerPi |
+| 1235 | WebSocket/TCP | Website Controller → ControllerPi |
+| 8088 | HTTP | Janus REST API |
+| 5006 | RTP/UDP | GStreamer camera stream → Janus |
+| 30000 | TCP | Raspberry Pi → ESP32 |
+
+---
+
+# First-Time Raspberry Pi Setup
+
+## Clone the repository
+
+```bash
+git clone https://github.com/Soccer-Robots/Raspberry-Pi.git
+cd Raspberry-Pi
+```
+
+Checkout the desired development branch if needed.
+
+For example:
+
+```bash
+git checkout Damian
+```
+
+---
+
+# Python Environment
+
+The Raspberry Pi services run from the repository virtual environment:
+
+```text
+.venv/
+```
+
+Create one if needed:
+
+```bash
+python3 -m venv --system-site-packages .venv
+```
+
+Activate it:
+
+```bash
+source .venv/bin/activate
+```
+
+Install Python dependencies:
+
+```bash
+pip install -r requirements.txt
+```
+
+The startup script does not depend on the shell's currently activated environment.
+
+It explicitly uses:
+
+```text
+.venv/bin/python
+```
+
+This prevents the Python services from accidentally starting with the wrong Python interpreter.
+
+---
+
+# Camera Setup
+
+The current camera is an IMX219.
+
+Verify camera detection with:
+
+```bash
+rpicam-hello --list-cameras
+```
+
+A working system should show an IMX219 camera.
+
+Example supported modes include:
+
+```text
+640x480
+1640x1232
+1920x1080
+3280x2464
+```
+
+For the Soccer Robots WebRTC stream we currently use:
+
+```text
+640x480
+30 FPS
+```
+
+If the camera cannot be detected, inspect:
+
+```bash
+/boot/firmware/config.txt
+```
+
+Some installations may require the IMX219 overlay.
+
+For example:
+
+```text
+camera_auto_detect=0
+dtoverlay=imx219
+```
+
+Reboot after changing camera configuration:
+
+```bash
+sudo reboot
+```
+
+---
+
+# Wi-Fi / Soccer Robots Hotspot
+
+The Raspberry Pi currently acts as the Soccer Robots network host.
+
+The expected address is:
+
+```text
+10.42.0.1
+```
+
+A NetworkManager hotspot can be created with:
+
+```bash
+sudo nmcli device wifi hotspot \
+    ssid [hotspot-name] \
+    password [hotspot-password] \
+    ifname wlan1
+```
+
+The exact interface name may differ depending on the installed Wi-Fi adapter.
+
+Useful commands:
+
+```bash
+ip addr
+```
+
+```bash
+nmcli device
+```
+
+```bash
+lsusb
+```
+
+```bash
+lsusb -t
+```
+
+---
+
+# Janus WebRTC Streaming
+
+Soccer Robots uses Janus Gateway for the low-latency player camera feed.
+
+Janus itself is intentionally not committed to this repository.
+
+The installed production runtime lives at:
+
+```text
+~/soccerrobots-runtime/janus
+```
+
+Janus source used during installation is stored outside the repository at:
+
+```text
+~/soccerrobots-build/janus-gateway
+```
+
+The repository contains the installer needed to recreate the runtime.
+
+---
+
+# Install the Streaming Runtime
+
+Run:
+
+```bash
+./scripts/install_streaming_runtime.sh
+```
+
+The installer:
+
+1. installs required system dependencies
+2. downloads Janus source
+3. checks out the known-good Janus revision
+4. builds Janus
+5. installs it into `~/soccerrobots-runtime/janus`
+6. installs the Soccer Robots Janus configuration
+7. verifies the required GStreamer elements
+
+The known-good Janus revision is intentionally pinned so another Raspberry Pi can reproduce the tested environment.
+
+The Janus build used for Soccer Robots enables the REST HTTP transport and Streaming plugin.
+
+Features not currently required by Soccer Robots, such as Janus WebSockets and data channels, are disabled in the lightweight build.
+
+---
+
+# Janus Configuration
+
+Project-owned Janus configuration is stored in:
+
+```text
+config/janus/
+```
+
+Important files:
+
+```text
+config/janus/janus.plugin.streaming.jcfg
+config/janus/janus.transport.http.jcfg
+```
+
+The camera streaming mountpoint is:
+
+```text
+ID:             43
+Description:    Soccer Robots Camera
+Video:          enabled
+Audio:          disabled
+Codec:          H.264
+RTP port:       5006
+Payload type:   96
+```
+
+The H.264 configuration uses:
+
+```text
+packetization-mode=1
+profile-level-id=42e01f
+```
+
+Janus HTTP API:
+
+```text
+http://10.42.0.1:8088/janus
+```
+
+---
+
+# Camera Streaming Pipeline
+
+The working camera pipeline is managed by:
+
+```text
+scripts/start_streaming.sh
+```
+
+Conceptually:
+
+```text
+rpicam-vid
+    |
+    | MPEG-TS
+    v
+GStreamer fdsrc
+    |
+    v
+tsdemux
+    |
+    v
+h264parse
+    |
+    v
+rtph264pay
+    |
+    | UDP :5006
+    v
+Janus
+```
+
+Current camera settings:
+
+```text
+Resolution:       640x480
+Frame rate:       30 FPS
+Codec:            H.264
+Bitrate:          1 Mbps
+Keyframe period:  10 frames
+Container:        MPEG-TS
+```
+
+---
+
+# Why MPEG-TS Is Used
+
+An earlier streaming proof of concept used:
+
+```text
+rpicam-vid
+      |
+raw H.264 stdout
+      |
+GStreamer
+```
+
+The video worked, but playback was extremely jumpy.
+
+The camera itself was verified to have very low latency using the older Picamera2/MJPEG server.
+
+The problem was therefore isolated to the H.264/GStreamer path.
+
+The improved pipeline became:
+
+```text
+rpicam-vid
+      |
+H.264 inside MPEG-TS
+      |
+tsdemux
+      |
+RTP
+      |
+Janus
+```
+
+Using MPEG-TS preserved usable stream timing/pacing through the pipe.
+
+The resulting Janus stream became dramatically smoother and faster.
+
+For that reason, do not casually replace the MPEG-TS handoff with a raw H.264 stdout pipe.
+
+---
+
+# Camera Process Management
+
+The camera pipeline contains multiple processes:
+
+```text
+bash
+rpicam-vid
+gst-launch-1.0
+```
+
+`scripts/start_streaming.sh` starts the pipeline inside its own process group using `setsid`.
+
+That allows the shutdown script to terminate the complete camera pipeline without globally killing unrelated GStreamer or camera processes.
+
+Runtime state is stored in:
+
+```text
+/tmp/soccerrobots-streaming/
+```
+
+including the Janus PID and camera process group ID.
+
+---
+
+# Starting Streaming Independently
+
+Streaming can be started without the robot services:
+
+```bash
+./scripts/start_streaming.sh
+```
+
+Verify:
+
+```bash
+pgrep -af "janus|rpicam-vid|gst-launch"
+```
+
+Verify Janus:
+
+```bash
+ss -ltnp | grep 8088
+```
+
+Verify Janus RTP input:
+
+```bash
+ss -lunp | grep 5006
+```
+
+Stop streaming:
+
+```bash
+./scripts/stop_streaming.sh
+```
+
+---
+
+# Starting the Entire Soccer Robots Runtime
+
+Normally, do not start individual processes manually.
+
+Use:
+
+```bash
+./start_soccer_robot.sh
+```
+
+The startup order is:
+
+```text
+1. EspManager.py
+2. GmServerPi.py
+3. ControllerPi.py
+4. Janus
+5. Camera/GStreamer pipeline
+```
+
+The order of the first three services matters because they establish Unix socket connections with EspManager.
+
+The startup script:
+
+- verifies `.venv/bin/python`
+- prevents duplicate services
+- removes stale Unix sockets
+- clears runtime logs
+- starts EspManager
+- verifies EspManager survived startup
+- starts GmServerPi
+- verifies GmServerPi
+- starts ControllerPi
+- verifies ControllerPi
+- starts Janus
+- starts the camera pipeline
+- rolls back already-started services if streaming fails
+
+---
+
+# Stopping Soccer Robots
+
+Stop the complete runtime with:
+
+```bash
+./stop_soccer_robot.sh
+```
+
+This stops:
+
+```text
+camera pipeline
+Janus
+ControllerPi
+GmServerPi
+EspManager
+```
+
+and removes runtime socket/shared-memory state.
+
+After stopping, verify:
+
+```bash
+pgrep -af "EspManager|GmServerPi|ControllerPi|janus|rpicam-vid|gst-launch"
+```
+
+There should be no Soccer Robots runtime processes remaining.
+
+---
+
+# Logs
+
+Main service logs:
+
+```text
+logs/esp.txt
+logs/GMServer.txt
+logs/Controller.txt
+logs/janus.txt
+logs/camera_stream.txt
+```
+
+View the ESP Manager log:
+
+```bash
+tail -f logs/esp.txt
+```
+
+View Game Manager:
+
+```bash
+tail -f logs/GMServer.txt
+```
+
+View Controller:
+
+```bash
+tail -f logs/Controller.txt
+```
+
+View Janus:
+
+```bash
+tail -f logs/janus.txt
+```
+
+View camera/GStreamer:
+
+```bash
+tail -f logs/camera_stream.txt
+```
+
+Runtime logs should not be committed to Git.
+
+---
+
+# Runtime Verification
+
+Check all processes:
+
+```bash
+pgrep -af \
+"EspManager|GmServerPi|ControllerPi|janus|rpicam-vid|gst-launch"
+```
+
+A normal running system should contain:
+
+```text
+EspManager.py
+GmServerPi.py
+ControllerPi.py
+janus
+rpicam-vid
+gst-launch-1.0
+```
+
+Check TCP services:
+
+```bash
+ss -ltnp | grep -E '1234|1235|8088'
+```
+
+Expected:
+
+```text
+1234
+1235
+8088
+```
+
+Check RTP:
+
+```bash
+ss -lunp | grep 5006
+```
+
+---
+
+# Soccer Robots Client Integration
+
+The Client repository displays the Janus stream through:
+
+```text
+components/Gameplay/VideoStream.vue
+```
+
+The Client receives Janus configuration through Nuxt public runtime configuration.
+
+Development environment:
+
+```env
+NUXT_PUBLIC_JANUS_URL=http://10.42.0.1:8088/janus
+NUXT_PUBLIC_JANUS_STREAM_ID=43
+```
+
+The intended current behavior is:
+
+```text
+User not in game
+      |
+      v
+Spectator stream / Twitch
+
+User enters game
+      |
+      v
+isInGame = true
+      |
+      v
+Janus WebRTC
+```
+
+When the user leaves or the game ends:
+
+```text
+isInGame = false
+```
+
+and the Janus WebRTC session is cleaned up.
+
+The Client also contains reconnect logic so a temporary Janus interruption does not necessarily require refreshing the page.
+
+---
+
+# Local WebRTC Networking
+
+The current Janus configuration is primarily a local-network development configuration.
+
+The Client connects directly to:
+
+```text
+10.42.0.1
+```
+
+and currently does not depend on an external STUN server for the local Soccer Robots network.
+
+For a future internet-facing deployment, NAT traversal, firewall configuration, HTTPS, secure Janus access, and potentially STUN/TURN infrastructure will need to be considered.
+
+A website loaded over HTTPS should not be expected to freely access an insecure HTTP Janus endpoint because browsers may block mixed content.
+
+---
+
+# Camera Ownership
+
+The IMX219 can normally only be acquired by one camera application at a time.
+
+Do not simultaneously run:
+
+```text
+cleanCode.py
+```
+
+and:
+
+```text
+rpicam-vid
+```
+
+Both attempt to own the camera.
+
+Typical error:
+
+```text
+Pipeline handler in use by another process
+Failed to acquire camera: Device or resource busy
+```
+
+Check camera owners with:
+
+```bash
+pgrep -af "rpicam-vid|cleanCode.py"
+```
+
+---
+
+# Legacy MJPEG Camera Server
+
+`cleanCode.py` is the older Picamera2/MJPEG streaming implementation.
+
+It was useful during development because it provided a nearly instantaneous camera stream and helped isolate latency problems in the first Janus proof of concept.
+
+It is no longer part of the normal Soccer Robots startup path.
+
+The current production player stream uses:
+
+```text
+rpicam-vid
+    -> MPEG-TS
+    -> GStreamer
+    -> RTP
+    -> Janus
+    -> WebRTC
+```
+
+If an MJPEG spectator stream is added in the future, the preferred design is to avoid acquiring the camera a second time.
+
+Instead, one camera capture pipeline should feed multiple output paths.
+
+---
+
+# Troubleshooting
+
+## ECONNREFUSED 10.42.0.1:1234
+
+Check GmServerPi:
+
+```bash
+pgrep -af GmServerPi
+```
+
+Check the port:
+
+```bash
+ss -ltnp | grep 1234
+```
+
+Check:
+
+```bash
+cat logs/GMServer.txt
+```
+
+---
+
+## Controller port 1235 unavailable
+
+Check:
+
+```bash
+pgrep -af ControllerPi
+```
+
+```bash
+ss -ltnp | grep 1235
+```
+
+```bash
+cat logs/Controller.txt
+```
+
+---
+
+## Protocol wrong type for socket
+
+EspManager, GmServerPi, and ControllerPi must agree on the Unix socket type.
+
+The current implementation uses:
+
+```python
+socket.AF_UNIX
+socket.SOCK_STREAM
+```
+
+Do not mix `SOCK_STREAM` with `SOCK_SEQPACKET`.
+
+---
+
+## Incorrect player count such as 114
+
+The Game Manager/ESP protocol sends the player count as one binary byte.
+
+The string:
+
+```text
+ready?
+```
+
+must not be interpreted as the player count.
+
+ASCII:
+
+```text
+'r' = 114
+```
+
+which was the cause of an earlier bug.
+
+---
+
+## Camera busy
+
+Run:
+
+```bash
+pgrep -af "rpicam-vid|cleanCode.py"
+```
+
+Stop the conflicting camera process.
+
+---
+
+## Janus is not running
+
+Check:
+
+```bash
+pgrep -af janus
+```
+
+Check:
+
+```bash
+ss -ltnp | grep 8088
+```
+
+Check:
+
+```bash
+tail -n 100 logs/janus.txt
+```
+
+Verify installation:
+
+```bash
+~/soccerrobots-runtime/janus/bin/janus --version
+```
+
+---
+
+## Camera pipeline fails
+
+Check:
+
+```bash
+tail -n 100 logs/camera_stream.txt
+```
+
+Verify required GStreamer elements:
+
+```bash
+gst-inspect-1.0 tsdemux
+gst-inspect-1.0 h264parse
+gst-inspect-1.0 rtph264pay
+```
+
+---
+
+## Janus backend works but Client video does not
+
+First verify:
+
+```text
+Camera
+ -> GStreamer
+ -> RTP
+ -> Janus
+```
+
+If a known-good Janus viewer can display the camera, then the problem is likely on the Client side rather than Raspberry Pi streaming.
+
+Check the browser developer console for:
+
+```text
+Janus initialization errors
+ICE failures
+WebRTC negotiation failures
+mixed-content errors
+```
+
+---
+
+# Known Limitations
+
+## Player count initialization
+
+EspManager currently determines the number of players when it first initializes.
+
+Changing from, for example:
+
+```text
+2 players
+```
+
+to:
+
+```text
+4 players
+```
+
+without restarting EspManager is not currently supported.
+
+Restart the Soccer Robots runtime if the player-count topology changes.
+
+---
+
+## Camera can only have one owner
+
+The current Janus pipeline and legacy Picamera2/MJPEG implementation cannot independently acquire the IMX219 at the same time.
+
+---
+
+## Local Janus address
+
+The current Janus URL:
+
+```text
+http://10.42.0.1:8088/janus
+```
+
+is designed around the Soccer Robots local network.
+
+A public/internet deployment will require additional networking and security work.
+
+---
+
+## Physical ESP configuration
+
+Mock mode is still useful during development.
+
+Real hardware operation requires:
+
+```python
+MOCK_ESP = False
+```
+
+and valid ESP32 addresses.
+
+---
+
+# Important Repository Files
+
+```text
+start_soccer_robot.sh
+    Starts the complete Soccer Robots Raspberry Pi runtime.
+
+stop_soccer_robot.sh
+    Stops the complete runtime.
+
+scripts/EspManager.py
+    Coordinates robots and creates per-player ESP child processes.
+
+scripts/ESPClient.py
+    TCP helper for communication with ESP32 boards.
+
+scripts/GmServerPi.py
+    Website Game Manager WebSocket server.
+
+scripts/ControllerPi.py
+    Website Controller WebSocket server.
+
+scripts/start_streaming.sh
+    Starts Janus and the camera/GStreamer pipeline.
+
+scripts/stop_streaming.sh
+    Stops Janus and the camera process group.
+
+scripts/install_streaming_runtime.sh
+    Reproduces the Janus/GStreamer runtime on another Raspberry Pi.
+
+config/janus/
+    Soccer Robots-owned Janus configuration.
+
+oled_info_display.py
+oled_info_display.service
+    Raspberry Pi IP/status display support.
+```
+
+---
+
+# Development Notes
+
+The current streaming architecture was selected after testing several approaches.
+
+The important progression was:
+
+```text
+Picamera2 / MJPEG
+    -> very responsive
+    -> not suitable as the final player WebRTC architecture
+
+Janus + VP8 test source
+    -> smooth
+    -> proved Janus could fan one stream out to multiple browsers
+
+IMX219 -> raw H.264 -> GStreamer -> Janus
+    -> worked
+    -> extremely jumpy
+
+IMX219 -> H.264/MPEG-TS -> GStreamer -> Janus
+    -> smooth
+    -> low latency
+    -> selected architecture
+```
+
+The final proof of concept was tested simultaneously in multiple browsers before being integrated into the Soccer Robots runtime and Client.
+
+---
+
+# Useful Development Commands
+
+Start:
+
+```bash
+./start_soccer_robot.sh
+```
+
+Stop:
+
+```bash
+./stop_soccer_robot.sh
+```
+
+Check processes:
+
+```bash
+pgrep -af \
+"EspManager|GmServerPi|ControllerPi|janus|rpicam-vid|gst-launch"
+```
+
+Check ports:
+
+```bash
+ss -ltnp | grep -E '1234|1235|8088'
+```
+
+Check RTP:
+
+```bash
+ss -lunp | grep 5006
+```
+
+Check camera:
+
+```bash
+rpicam-hello --list-cameras
+```
+
+Check throttling:
+
+```bash
+vcgencmd get_throttled
+```
+
+A healthy Raspberry Pi normally reports:
+
+```text
+throttled=0x0
+```
+
+Check temperature:
+
+```bash
+vcgencmd measure_temp
+```
+
+Check system load:
+
+```bash
+top
+```
+
+---
+
+# Full Cold-Start Test
+
+Stop everything:
+
+```bash
+./stop_soccer_robot.sh
+```
+
+Verify no runtime processes remain:
+
+```bash
+pgrep -af \
+"EspManager|GmServerPi|ControllerPi|janus|rpicam-vid|gst-launch"
+```
+
+Start everything:
+
+```bash
+./start_soccer_robot.sh
+```
+
+Verify:
+
+```bash
+pgrep -af \
+"EspManager|GmServerPi|ControllerPi|janus|rpicam-vid|gst-launch"
+```
+
+Then verify:
+
+```bash
+ss -ltnp | grep -E '1234|1235|8088'
+```
+
+Finally test the actual Soccer Robots Client and confirm:
+
+```text
+spectator
+    ->
+player joins game
+    ->
+Janus stream appears
+    ->
+game ends
+    ->
+Janus session closes
+```
+
+This should be performed after major Raspberry Pi networking, streaming, or Game Manager changes.
+
+---

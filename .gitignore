@@ -1,1 +1,15 @@
-/.history
+
+# Python
+__pycache__/
+*.py[cod]
+
+# Editor history
+.history/
+
+# Soccer Robots runtime logs
+logs/janus.txt
+logs/camera_stream.txt
+
+# Runtime state
+*.pid
+*.pgid
